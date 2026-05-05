@@ -8,12 +8,30 @@ import chalk from "chalk";
 import ora from "ora";
 
 // ──────────────────────────────────────────────
-//  Groq Client (OpenAI-compatible SDK)
+//  LLM Clients (OpenAI-compatible SDK)
+//  Primary: Gemini   •  Fallback: Groq (auto-engages on persistent rate limits)
 // ──────────────────────────────────────────────
-const client = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: "https://api.groq.com/openai/v1",
-});
+const geminiClient = process.env.GEMINI_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    })
+  : null;
+
+const groqClient = process.env.GROQ_API_KEY
+  ? new OpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    })
+  : null;
+
+const PROVIDERS = {
+  gemini: { client: geminiClient, model: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+  groq:   { client: groqClient,   model: "llama-3.1-8b-instant", label: "Groq Llama 3.1 8B Instant" },
+};
+
+// Mutable session state — starts on Gemini, can flip to Groq on persistent failures.
+let activeProvider = geminiClient ? "gemini" : "groq";
 
 // ──────────────────────────────────────────────
 //  Tool Implementations
@@ -142,29 +160,13 @@ You follow the cycle: START → THINK → PLAN → TOOL → OBSERVE → (repeat)
 
 Your primary task is to help users clone the Scaler Academy website (https://www.scaler.com) by generating fully working HTML, CSS, and JavaScript files.
 
-═══ TOOLS AVAILABLE ═══
-1. writeFile(filePath, content) — Create or overwrite a file. Creates directories if needed.
-   - tool_args: { "filePath": "string", "content": "string" }
-
-2. appendFile(filePath, content) — Append to an existing file (creates it if missing).
-   USE THIS to build large files in multiple chunks so a single response never has to carry all of styles.css or index.html at once. Example pattern:
-     1) writeFile styles.css with the :root tokens + reset + header CSS
-     2) appendFile styles.css with hero CSS
-     3) appendFile styles.css with cards + features CSS
-     4) appendFile styles.css with testimonials + footer + media queries
-   - tool_args: { "filePath": "string", "content": "string" }
-
-3. readFile(filePath) — Read the contents of an existing file.
-   - tool_args: { "filePath": "string" }
-
-4. executeCommand(cmd) — Execute a shell command (unix/mac).
-   - tool_args: { "cmd": "string" }
-
-5. openInBrowser(filePath) — Open an HTML file in the default browser.
-   - tool_args: { "filePath": "string" }
-
-6. listFiles(dirPath) — List files and directories at a path.
-   - tool_args: { "dirPath": "string" }
+═══ TOOLS ═══
+- writeFile({filePath, content})    — create/overwrite file (mkdir -p)
+- appendFile({filePath, content})   — append to file. USE THIS to chunk large files.
+- readFile({filePath})               — read file contents
+- executeCommand({cmd})              — run shell command
+- openInBrowser({filePath})          — open HTML in default browser
+- listFiles({dirPath})               — list directory
 
 ═══ RULES ═══
 1. Always respond with a single valid JSON object per message.
@@ -186,75 +188,37 @@ Your primary task is to help users clone the Scaler Academy website (https://www
 
 7. For the Scaler website clone, generate substantial, content-rich sections. Use the structural guidance below.
 
-═══ SCALER CLONE — STRUCTURAL BLUEPRINT ═══
+═══ SCALER CLONE — BLUEPRINT (sections top→bottom) ═══
+Write your OWN original copy in the spirit of an edtech homepage. Do NOT reproduce scaler.com text.
 
-Treat this as a scaffold to expand on. Write your own copy in the spirit of an edtech homepage — do NOT copy verbatim from scaler.com.
+HEADER  — sticky, white bg, ~72px. Logo (bold "Scaler") | nav: Courses, Academy, Neovarsity, For Business, Resources | "Login" link | filled CTA. Mobile hamburger toggles slide-in menu.
 
-▸ HEADER (sticky, ~72px tall, white background, subtle bottom shadow on scroll)
-  - Left: Scaler-style wordmark logo (use text "Scaler" with bold weight, or an inline SVG)
-  - Center/Right nav links: "Courses", "Scaler Academy", "Scaler Neovarsity", "For Business", "Resources" (each with a small chevron suggesting a dropdown)
-  - Right side CTAs: a "Login" text link + a primary filled button "Book a Free Trial" or "Apply Now"
-  - Mobile: hamburger that toggles a slide-in menu (wire this in script.js)
+HERO    — full-width, ~650px, dark gradient bg, 2-col desktop / stacked mobile.
+  · eyebrow pill, H1 clamp(36–64px) with gradient span, 2-line subheadline, two CTAs (filled + ghost), trust strip ("20K+ learners • 1:1 mentorship • Top hiring partners"), right col abstract gradient blob/cards.
 
-▸ HERO SECTION (full-width, ~600–700px tall, dark gradient background)
-  - Two-column layout on desktop (text left, illustration/graphic right), stacks on mobile
-  - Eyebrow tag (small pill): e.g. "Transform Your Tech Career"
-  - H1 headline (clamp 36px → 64px) with a gradient-highlighted span on a key word
-  - Subheadline paragraph (~2 lines) describing outcomes — placement, mentorship, live classes
-  - Two CTAs side-by-side: primary filled "Get Started" + ghost outline "Watch Demo"
-  - Trust strip below CTAs: "20,000+ learners" • "1:1 mentorship" • "Top tech companies hiring"
-  - Right column: floating cards / stats tiles / abstract gradient blob illustration (pure CSS)
+STATS   — 4 cols, big number + label (learners, avg package, hiring partners, rating).
 
-▸ STATS / SOCIAL-PROOF STRIP (4 columns)
-  - Big number + label pattern, e.g. "20K+ Learners", "₹35 LPA Avg Package", "1000+ Hiring Partners", "4.8/5 Rating"
+COURSES — 3-card grid (1 col mobile). Each: gradient accent, program name, duration tag, 2–3 outcome bullets, "Learn More →". Programs: Software Development, Data Science & ML, DevOps & Cloud. Hover lift.
 
-▸ COURSE / PROGRAM CARDS GRID (3 cards on desktop, 1 on mobile)
-  - Each card: gradient border or top accent, program name, duration tag, 2–3 bullet outcomes, "Learn More →" link
-  - Suggested programs: "Software Development", "Data Science & ML", "DevOps & Cloud"
-  - Subtle lift-on-hover (translateY -6px + box-shadow)
+WHY     — 3×2 icon grid. Themes: Live classes, 1:1 mentorship, Industry curriculum, Placement support, Peer community, Real projects.
 
-▸ "WHY SCALER" FEATURE GRID (2x3 or 3x2)
-  - Icon + title + 1-line description per cell
-  - Themes: Live classes, 1:1 mentorship, Industry curriculum, Placement support, Peer community, Real projects
+TESTIMONIALS — 2–3 cards (quote, name, role/company, outcome metric like "150% hike"). Logo strip below.
 
-▸ TESTIMONIAL SECTION
-  - 2–3 cards with quote, learner name, role/company, outcome metric (e.g., "150% hike")
-  - Optional company logo strip below ("Hired at: Google, Amazon, Microsoft, …" — render as styled text pills)
-
-▸ FOOTER (dark background, ~4 columns + bottom bar)
-  - Column 1: Logo + 1-line tagline + social icons (LinkedIn, Twitter/X, YouTube, Instagram) as inline SVGs
-  - Column 2 "Programs": Scaler Academy, Data Science, DevOps, Neovarsity
-  - Column 3 "Company": About, Careers, Press, Contact
-  - Column 4 "Resources": Blog, Events, Community, Help Center
-  - Bottom bar: © 2025 Scaler. All rights reserved. + small Privacy / Terms links
+FOOTER  — dark, 4 cols + bottom bar. Col1: logo + tagline + social SVGs (LinkedIn/X/YouTube/IG). Col2 Programs. Col3 Company. Col4 Resources. Bottom: © 2025 Scaler + Privacy/Terms.
 
 ═══ DESIGN SYSTEM ═══
-- Color tokens (declare as :root CSS variables):
-  --bg-dark: #0B0B1F;  --bg-darker: #060614;  --surface: #16213E;
-  --primary: #4361EE;  --primary-2: #3F37C9;
-  --accent: #F72585;   --accent-2: #7209B6;
-  --text: #E8EAF1;     --text-muted: #9aa0b4;
-  --hero-gradient: linear-gradient(135deg, #0B0B1F 0%, #1A0B3D 50%, #2C0E5C 100%);
-  --cta-gradient: linear-gradient(135deg, #4361EE 0%, #7209B6 100%);
-- Typography: font stack "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"; weights 400/500/600/700; H1 clamp(36px, 5vw, 64px); body 16px/1.6.
-- Spacing: 8px scale (8/16/24/32/48/64/96). Container max-width 1200px, side padding 24px.
-- Components: rounded buttons (border-radius 8px), card radius 16px, soft shadows (0 8px 24px rgba(0,0,0,.12)).
-- Motion: 250ms ease-out transitions; subtle fade-up on scroll for sections (use IntersectionObserver in script.js).
-- Responsive: mobile breakpoint at 768px, tablet at 1024px. Use CSS Grid + Flexbox.
+:root tokens — --bg-dark:#0B0B1F; --bg-darker:#060614; --surface:#16213E; --primary:#4361EE; --primary-2:#3F37C9; --accent:#F72585; --accent-2:#7209B6; --text:#E8EAF1; --text-muted:#9aa0b4; --hero-gradient:linear-gradient(135deg,#0B0B1F,#1A0B3D 50%,#2C0E5C); --cta-gradient:linear-gradient(135deg,#4361EE,#7209B6).
+Typography — Inter, system-ui sans; weights 400/500/600/700; H1 clamp(36px,5vw,64px); body 16px/1.6.
+Spacing — 8px scale; container max-width 1200px, padding 24px.
+Components — buttons radius 8px; cards radius 16px; shadow 0 8px 24px rgba(0,0,0,.12).
+Motion — 250ms ease-out; IntersectionObserver fade-up on sections.
+Responsive — breakpoints 768 / 1024. CSS Grid + Flexbox.
 
-═══ FILE QUALITY BAR ═══
-- styles.css should be 300+ lines spread across the chunked appendFile calls above.
-- script.js should implement: sticky-header shadow on scroll, mobile menu toggle, IntersectionObserver fade-ins, smooth-scroll for anchor links.
-- index.html should be semantic (header/main/section/footer), use proper heading hierarchy, and contain REAL copy for every visible element:
-   * Real nav link labels (e.g., "Courses", "Programs", "Resources", "About")
-   * A real H1 headline (a complete sentence, e.g., "Accelerate your tech career with live mentorship")
-   * A real subheadline paragraph
-   * Real button labels ("Get Started", "Watch Demo")
-   * Real stat numbers and labels in the social-proof strip
-   * Real course names + descriptions in the cards
-   * Real testimonial quotes with names and roles
-   * Real footer column headers and link labels
-- ZERO ellipsis placeholders. ZERO empty elements. If you cannot fit a section's full content into one response, use appendFile to add the rest.
+═══ QUALITY BAR ═══
+- styles.css ≥ 300 lines across chunked appendFile calls.
+- script.js: sticky-header shadow on scroll, mobile menu toggle, IntersectionObserver fade-ins, smooth-scroll anchors.
+- index.html semantic (header/main/section/footer), real copy in every element: real nav labels, real H1 sentence, real subheadline, real button labels, real stat numbers, real course descriptions, real testimonial quotes/names, real footer link labels.
+- ZERO ellipsis/TODO/Lorem-ipsum. If a section won't fit in one response, finish it with appendFile.
 
 ═══ OUTPUT FORMAT ═══
 Each response is ONE JSON object. To minimize API calls, bundle your reasoning with your action in the SAME response:
@@ -304,7 +268,7 @@ Final response:
 const BANNER = `
 ${chalk.hex("#4361EE").bold("╔══════════════════════════════════════════════════════════════╗")}
 ${chalk.hex("#4361EE").bold("║")}  ${chalk.hex("#F72585").bold("🤖 AI Web Agent")} ${chalk.dim("— Scaler Website Cloner")}                    ${chalk.hex("#4361EE").bold("║")}
-${chalk.hex("#4361EE").bold("║")}  ${chalk.dim("Powered by Llama 3.3 70B (Groq)  •  Type")} ${chalk.cyan("'exit'")} ${chalk.dim("to quit")} ${chalk.hex("#4361EE").bold("║")}
+${chalk.hex("#4361EE").bold("║")}  ${chalk.dim("Multi-provider (Gemini / Groq)  •  Type")} ${chalk.cyan("'exit'")} ${chalk.dim("to quit")}      ${chalk.hex("#4361EE").bold("║")}
 ${chalk.hex("#4361EE").bold("╚══════════════════════════════════════════════════════════════╝")}
 `;
 
@@ -392,8 +356,9 @@ async function agentLoop(userMessage, conversationHistory) {
 
     let response;
     try {
+      const { client, model } = PROVIDERS[activeProvider];
       response = await client.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
+        model,
         messages: conversationHistory,
         temperature: 0.1,
         max_tokens: 8000,
@@ -404,10 +369,32 @@ async function agentLoop(userMessage, conversationHistory) {
       spinner.stop();
       const status = err?.status ?? err?.response?.status;
       const isRateLimit = status === 429 || /rate.?limit/i.test(err?.message || "");
-      if (isRateLimit && consecutiveBackoffs < 4) {
+      const isTransient5xx = typeof status === "number" && status >= 500 && status < 600;
+      const isRetryable = isRateLimit || isTransient5xx;
+      const detail = (err?.error?.message || err?.message || "").toString().slice(0, 200);
+
+      // Auto-fallback: if primary provider keeps refusing, swap to the other one.
+      const otherProvider = activeProvider === "gemini" ? "groq" : "gemini";
+      const canFallback = PROVIDERS[otherProvider]?.client && consecutiveBackoffs >= 2;
+      if (isRetryable && canFallback) {
+        console.log(
+          chalk.cyan(
+            `🔁 ${PROVIDERS[activeProvider].label} keeps refusing — switching to ${PROVIDERS[otherProvider].label} for the rest of this session.`
+          )
+        );
+        if (detail) console.log(chalk.dim(`   reason: ${detail}`));
+        activeProvider = otherProvider;
+        consecutiveBackoffs = 0;
+        iterationCount--;
+        continue;
+      }
+
+      if (isRetryable && consecutiveBackoffs < 5) {
         consecutiveBackoffs++;
         const wait = (retryAfterSeconds(err) ?? Math.min(30, 2 ** consecutiveBackoffs)) * 1000;
-        console.log(chalk.yellow(`⏳ Rate limited. Waiting ${Math.round(wait / 1000)}s before retry (${consecutiveBackoffs}/4)…`));
+        const label = isRateLimit ? "Rate limited" : `Server ${status} (overloaded)`;
+        console.log(chalk.yellow(`⏳ ${label}. Waiting ${Math.round(wait / 1000)}s before retry (${consecutiveBackoffs}/5)…`));
+        if (detail) console.log(chalk.dim(`   reason: ${detail}`));
         await sleep(wait);
         iterationCount--; // don't burn an iteration on a retry
         continue;
@@ -504,12 +491,17 @@ async function main() {
   console.clear();
   console.log(BANNER);
 
-  // Check for API key
-  if (!process.env.GROQ_API_KEY) {
-    console.log(chalk.red("❌ GROQ_API_KEY not found in environment."));
-    console.log(chalk.dim("   Create a .env file with: GROQ_API_KEY=your_key_here"));
-    console.log(chalk.dim("   Get a free key at: https://console.groq.com"));
+  // Check for at least one API key
+  if (!geminiClient && !groqClient) {
+    console.log(chalk.red("❌ No API key found. Set GEMINI_API_KEY and/or GROQ_API_KEY in .env"));
+    console.log(chalk.dim("   Gemini: https://aistudio.google.com/apikey"));
+    console.log(chalk.dim("   Groq:   https://console.groq.com"));
     process.exit(1);
+  }
+  console.log(chalk.dim(`🔌 Active provider: ${PROVIDERS[activeProvider].label}`));
+  if (geminiClient && groqClient) {
+    const fallback = activeProvider === "gemini" ? "groq" : "gemini";
+    console.log(chalk.dim(`   Fallback ready: ${PROVIDERS[fallback].label} (auto-switches on persistent rate limits)`));
   }
 
   console.log(chalk.dim("💡 Try: \"Clone the Scaler Academy website\"\n"));

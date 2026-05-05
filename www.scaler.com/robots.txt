@@ -1,0 +1,23 @@
+# See http://www.robotstxt.org/robotstxt.html for documentation on how to use the robots.txt file
+#
+# To ban all spiders from the entire site uncomment the next two lines:
+
+User-agent: *
+Disallow: /profile
+Disallow: /event/*
+
+Disallow: /topics/*?
+Disallow: /topics/page/*
+Disallow: /topics/category/*
+Disallow: /topics/*/amp/*
+
+Disallow: /academy/mentor/profile/
+Disallow: /academy/profile/
+Disallow: /careers/
+Allow: /careers/$
+Disallow: /users/sign_up/
+Disallow: /users/confirmation/new/
+Disallow: /users/password/new/
+Disallow: /users/sign_in/mobile/
+
+Sitemap: https://www.scaler.com/sitemap.xml.gz
